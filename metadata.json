@@ -1,0 +1,8 @@
+{
+  "name": "Insanus Planner",
+  "description": "Uma plataforma avançada de gestão de estudos e planejamento de rotina para concursos públicos, com cronogramas inteligentes e sistemas de revisão.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
