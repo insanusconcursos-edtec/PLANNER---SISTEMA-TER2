@@ -1,37 +1,87 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { User, GoalType } from '../../types';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { User, GoalType, StudyPlan, UserProgress, SubGoalAula } from '../../types';
+import { distributeGoals } from '../../lib/scheduler';
+import { db } from '../../firebase';
+import { collection, addDoc, query, where, onSnapshot } from 'firebase/firestore';
+import PDFReader from '../../components/PDFReader';
 
 interface DailyGoalsProps {
   user: User;
+  plans: StudyPlan[];
 }
 
-const DailyGoals: React.FC<DailyGoalsProps> = ({ user }) => {
+const UserDailyGoals: React.FC<DailyGoalsProps> = ({ user, plans }) => {
   const [expandedMetaId, setExpandedMetaId] = useState<string | null>(null);
   const [activeMetaId, setActiveMetaId] = useState<string | null>(null);
+  const [activeSubMetaId, setActiveSubMetaId] = useState<string | null>(null);
   const [timer, setTimer] = useState(0);
   const [isRunning, setIsRunning] = useState(false);
-  // Fix: Use ReturnType<typeof setInterval> instead of NodeJS.Timeout to resolve namespace error in browser-only environments.
+  const [progress, setProgress] = useState<UserProgress[]>([]);
+  const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const activePlan = useMemo(() => plans.find(p => p.id === user.activePlanId), [user.activePlanId, plans]);
+
+  useEffect(() => {
+    if (user.id && user.activePlanId) {
+       const q = query(collection(db, "progress"), where("userId", "==", user.id), where("planId", "==", user.activePlanId));
+       const unsubscribe = onSnapshot(q, (snap) => {
+          const list: UserProgress[] = [];
+          snap.forEach(doc => list.push(doc.data() as UserProgress));
+          setProgress(list);
+       });
+       return () => unsubscribe();
+    }
+  }, [user.id, user.activePlanId]);
+
+  const dailyGoals = useMemo(() => {
+    if (!activePlan) return [];
+    const allScheduled = distributeGoals(activePlan, user.routine, user.level, progress);
+    const today = new Date();
+    const grouped: { [key: string]: any } = {};
+    allScheduled.filter(g => g.date.toDateString() === today.toDateString()).forEach(g => {
+      if (!grouped[g.meta.id]) {
+        grouped[g.meta.id] = { ...g, subMetasParaHoje: [] };
+      }
+      if (g.subMeta) grouped[g.meta.id].subMetasParaHoje.push(g.subMeta);
+    });
+    return Object.values(grouped);
+  }, [activePlan, user.routine, user.level, progress]);
 
   useEffect(() => {
     if (isRunning) {
-      timerRef.current = setInterval(() => {
-        setTimer(t => t + 1);
-      }, 1000);
+      timerRef.current = setInterval(() => setTimer(t => t + 1), 1000);
     } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+      if (timerRef.current) clearInterval(timerRef.current);
     }
-    return () => { 
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    };
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [isRunning]);
+
+  const handleConcluirMeta = async (metaId: string, subMetaId?: string) => {
+    if (!activePlan) return;
+    setIsRunning(false);
+    
+    const newProgress: UserProgress = {
+      userId: user.id,
+      planId: activePlan.id,
+      metaId: metaId,
+      subMetaId: subMetaId,
+      completedAt: new Date().toISOString(),
+      timeSpent: timer,
+      status: 'completed'
+    };
+
+    try {
+      await addDoc(collection(db, "progress"), newProgress);
+      setActiveMetaId(null);
+      setActiveSubMetaId(null);
+      setTimer(0);
+      alert("Sucesso! Atividade registrada.");
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const formatTime = (seconds: number) => {
     const h = Math.floor(seconds / 3600);
@@ -40,152 +90,145 @@ const DailyGoals: React.FC<DailyGoalsProps> = ({ user }) => {
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const handleStartMeta = (id: string) => {
-    setActiveMetaId(id);
-    setTimer(0);
-    setIsRunning(true);
-  };
-
-  const handleFinishMeta = () => {
-    // Save timer data to profile logic here
-    setIsRunning(false);
-    setActiveMetaId(null);
-    setTimer(0);
-    alert("Meta concluída! Tempo líquido registrado.");
-  };
-
-  // Mocked goals for current day
-  const dailyGoals = [
-    {
-      id: 'm1',
-      title: 'Direito Administrativo - Atos Administrativos',
-      type: GoalType.AULA,
-      color: '#ef4444',
-      duration: 120,
-      submetas: [
-        { id: 's1', title: 'Conceito e Requisitos', duration: 45, link: 'https://youtube.com' },
-        { id: 's2', title: 'Atributos e Classificação', duration: 75, link: 'https://youtube.com' },
-      ],
-      obs: 'Focar nos requisitos de validade (COM-FI-FOR-M-OB)'
-    },
-    {
-       id: 'm2',
-       title: 'Questões - Atos Administrativos',
-       type: GoalType.QUESTOES,
-       color: '#3b82f6',
-       duration: 60,
-       pages: 10,
-       link: 'https://tecconcursos.com.br'
-    }
-  ];
-
   return (
-    <div className="max-w-4xl mx-auto">
-      <header className="mb-8 flex justify-between items-end border-b border-gray-800 pb-4">
+    <div className="max-w-4xl mx-auto animate-in fade-in slide-in-from-right duration-700">
+      <header className="mb-10 flex justify-between items-end border-b border-gray-900 pb-6">
         <div>
-          <h1 className="text-3xl font-futuristic text-white">Metas Diárias</h1>
-          <p className="text-gray-400 mt-1">Hoje é {(new Date()).toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+          <h1 className="text-3xl font-futuristic text-white uppercase tracking-tighter">Metas Diárias</h1>
+          <p className="text-[10px] text-gray-500 font-black uppercase tracking-[3px] mt-1 italic">
+            {(new Date()).toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
+          </p>
         </div>
         
         {activeMetaId && (
-          <div className="glass-panel p-4 rounded-xl border border-red-900/30 flex items-center gap-6 animate-pulse">
-            <div>
-              <p className="text-[10px] uppercase font-bold text-red-500 tracking-widest">Estudando agora</p>
-              <p className="text-xl font-futuristic text-white">{formatTime(timer)}</p>
+          <div className="glass-panel p-5 rounded-2xl border border-red-900/40 flex items-center gap-6 shadow-2xl animate-in zoom-in">
+            <div className="text-center">
+              <p className="text-[8px] uppercase font-black text-red-500 tracking-[2px] mb-1">Estudo Líquido</p>
+              <p className="text-2xl font-futuristic text-white">{formatTime(timer)}</p>
             </div>
             <div className="flex gap-2">
-               <button onClick={() => setIsRunning(!isRunning)} className="p-2 bg-gray-800 rounded hover:bg-gray-700 transition text-lg">
+               <button onClick={() => setIsRunning(!isRunning)} className="w-10 h-10 bg-gray-900 rounded-full border border-gray-800 flex items-center justify-center">
                 {isRunning ? '⏸️' : '▶️'}
               </button>
-              <button onClick={handleFinishMeta} className="px-4 py-2 bg-red-600 rounded text-xs font-bold hover:bg-red-700">
-                CONCLUIR
-              </button>
+              <button onClick={() => handleConcluirMeta(activeMetaId, activeSubMetaId || undefined)} className="px-5 py-2 bg-red-600 rounded-xl text-[10px] font-black uppercase text-white">CONCLUIR</button>
             </div>
           </div>
         )}
       </header>
 
-      <div className="space-y-4">
-        {dailyGoals.map((meta) => (
-          <div key={meta.id} className="glass-panel rounded-xl overflow-hidden border border-gray-800">
-            <div className="p-5 flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-2 h-12 rounded-full" style={{ backgroundColor: meta.color }}></div>
-                <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-gray-800 text-gray-300 border border-gray-700">
-                      {meta.type}
-                    </span>
-                    <span className="text-xs text-gray-500 font-medium">{meta.duration} min</span>
+      <div className="space-y-6 pb-20">
+        {dailyGoals.length === 0 && (
+           <div className="py-24 text-center glass-panel rounded-[40px] border border-gray-800">
+              <p className="text-gray-600 font-black uppercase tracking-widest text-xs">A meta diária foi atingida ou você não possui estudos para hoje.</p>
+           </div>
+        )}
+        {dailyGoals.map((scheduled) => {
+          const meta = scheduled.meta;
+          const isAULA = meta.type === GoalType.AULA;
+          const isCompleted = isAULA 
+            ? meta.submetasAulas?.every(sm => progress.some(p => p.subMetaId === sm.id))
+            : progress.some(p => p.metaId === meta.id);
+
+          return (
+            <div key={meta.id} className={`glass-panel rounded-3xl overflow-hidden border transition-all ${isCompleted ? 'opacity-40 border-green-900/30' : 'border-gray-800 hover:border-gray-600'}`}>
+              <div className="p-6 flex items-center justify-between">
+                <div className="flex items-center gap-5">
+                  {/* Utilizando a cor definida pelo administrador */}
+                  <div className="w-1.5 h-14 rounded-full" style={{ backgroundColor: meta.color || '#ef4444' }}></div>
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-black/60 text-gray-400 border border-gray-800 uppercase tracking-[2px]">
+                        {meta.type}
+                      </span>
+                      {isCompleted && <span className="text-[8px] font-black text-green-500 uppercase">Finalizada ✓</span>}
+                    </div>
+                    <h3 className="text-md font-bold text-white uppercase font-futuristic tracking-tight leading-relaxed whitespace-pre-wrap">{meta.title}</h3>
+                    <p className="text-[9px] text-gray-600 font-black uppercase">{scheduled.disciplineName} » {scheduled.subjectName}</p>
                   </div>
-                  <h3 className="text-lg font-semibold text-white">{meta.title}</h3>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <button onClick={() => setExpandedMetaId(expandedMetaId === meta.id ? null : meta.id)} className="p-2 text-gray-600 bg-gray-900/50 rounded-lg hover:text-white transition">
+                    {expandedMetaId === meta.id ? '▲' : '▼'}
+                  </button>
+                  {!isAULA && !isCompleted && (
+                    <button 
+                      onClick={() => { setActiveMetaId(meta.id); setTimer(0); setIsRunning(true); setExpandedMetaId(meta.id); }}
+                      className={`px-6 py-3 rounded-xl font-black text-[10px] transition-all uppercase tracking-widest ${activeMetaId === meta.id ? 'bg-gray-800 text-gray-600' : 'bg-red-600 text-white shadow-xl shadow-red-900/20 hover:scale-105'}`}
+                    >
+                      {activeMetaId === meta.id ? 'EM ANDAMENTO...' : 'INICIAR'}
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-3">
-                {meta.type === GoalType.AULA && (
-                   <button 
-                    onClick={() => setExpandedMetaId(expandedMetaId === meta.id ? null : meta.id)}
-                    className="p-2 text-gray-400 hover:text-white transition"
-                   >
-                    {expandedMetaId === meta.id ? '🔼' : '🔽'}
-                   </button>
-                )}
-                <button 
-                  onClick={() => handleStartMeta(meta.id)}
-                  disabled={!!activeMetaId}
-                  className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${
-                    activeMetaId === meta.id 
-                      ? 'bg-gray-800 text-gray-500 cursor-not-allowed' 
-                      : 'bg-red-600 hover:bg-red-700 text-white shadow-lg shadow-red-900/20'
-                  }`}
-                >
-                  {activeMetaId === meta.id ? 'EM ANDAMENTO' : 'INICIAR META'}
-                </button>
-              </div>
-            </div>
+              {expandedMetaId === meta.id && (
+                <div className="px-8 pb-8 pt-4 border-t border-gray-800 bg-black/40 animate-in slide-in-from-top duration-300">
+                  {meta.observations && (
+                    <div className="mb-6 p-4 rounded-xl bg-gray-900/80 border border-gray-800 text-[11px] text-gray-400">
+                       <span className="text-red-500 font-black uppercase text-[9px] block mb-2 tracking-widest">DICA DO PROFESSOR:</span>
+                       {meta.observations}
+                    </div>
+                  )}
 
-            {/* Smart Accordion for subgoals / details */}
-            {(expandedMetaId === meta.id || meta.obs) && (
-              <div className="px-5 pb-5 pt-2 border-t border-gray-800 bg-black/40">
-                {meta.obs && (
-                  <div className="mb-4 p-3 rounded bg-blue-900/20 border border-blue-900/30 text-xs text-blue-300 italic">
-                    <strong>Obs:</strong> {meta.obs}
+                  {isAULA && (
+                     <div className="space-y-3">
+                        <p className="text-[9px] font-black text-gray-600 uppercase tracking-widest mb-2 italic">Aulas previstas para hoje:</p>
+                        {scheduled.subMetasParaHoje.map((sm: SubGoalAula) => {
+                          const smCompleted = progress.some(p => p.subMetaId === sm.id);
+                          const smActive = activeSubMetaId === sm.id;
+                          
+                          return (
+                            <div key={sm.id} className={`flex items-center justify-between p-4 rounded-xl border transition-all ${smCompleted ? 'bg-green-900/10 border-green-900/20' : 'bg-gray-900/60 border-gray-800'}`}>
+                               <div className="flex items-center gap-4">
+                                  <div className={`w-2 h-2 rounded-full ${smCompleted ? 'bg-green-500' : smActive ? 'bg-red-500 animate-pulse' : 'bg-gray-700'}`}></div>
+                                  <div>
+                                    <span className={`text-xs ${smCompleted ? 'text-green-500 font-bold' : 'text-gray-300'}`}>{sm.title}</span>
+                                    <span className="text-gray-600 text-[10px] ml-2 font-black">({sm.duration}min)</span>
+                                  </div>
+                               </div>
+                               <div className="flex items-center gap-3">
+                                  {sm.link && <a href={sm.link} target="_blank" className="text-[9px] font-black text-gray-500 hover:text-white transition">LINK ↗</a>}
+                                  {!smCompleted && (
+                                    <button 
+                                      onClick={() => { setActiveMetaId(meta.id); setActiveSubMetaId(sm.id); setTimer(0); setIsRunning(true); }}
+                                      className={`px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${smActive ? 'bg-gray-800 text-gray-500' : 'bg-red-600 text-white hover:bg-red-700'}`}
+                                    >
+                                      {smActive ? 'ASSISTINDO' : 'INICIAR'}
+                                    </button>
+                                  )}
+                                  {smCompleted && <span className="text-[9px] font-black text-green-500 uppercase tracking-widest">VISTO ✓</span>}
+                               </div>
+                            </div>
+                          );
+                        })}
+                     </div>
+                  )}
+
+                  <div className="mt-8 flex flex-wrap gap-4 justify-end">
+                    {meta.pdfUrl && (
+                       <button onClick={() => setActivePdfUrl(meta.pdfUrl!)} className="px-5 py-2.5 bg-gray-900 border border-gray-800 rounded-xl text-[9px] font-black uppercase text-blue-500 hover:border-blue-500 transition">
+                         ABRIR MATERIAL PDF 📄
+                       </button>
+                    )}
+                    {meta.link && (
+                       <a href={meta.link} target="_blank" className="px-5 py-2.5 bg-gray-900 border border-gray-800 rounded-xl text-[9px] font-black uppercase text-gray-400 hover:text-white transition">
+                         ACESSAR CONTEÚDO ↗
+                       </a>
+                    )}
                   </div>
-                )}
-                
-                {meta.submetas && (
-                  <div className="space-y-2">
-                    <p className="text-[10px] uppercase font-bold text-gray-500 mb-2">Submetas de Aula</p>
-                    {meta.submetas.map((sm) => (
-                      <div key={sm.id} className="flex items-center justify-between p-3 rounded bg-gray-900 border border-gray-800 hover:border-gray-700 transition group">
-                        <div className="flex items-center gap-3">
-                           <input type="checkbox" className="w-4 h-4 accent-red-600 rounded" />
-                           <span className="text-sm text-gray-300">{sm.title} <span className="text-gray-600">({sm.duration} min)</span></span>
-                        </div>
-                        <a href={sm.link} target="_blank" rel="noopener noreferrer" className="text-xs text-red-500 hover:underline opacity-0 group-hover:opacity-100 transition">
-                          ACESSAR AULA ↗
-                        </a>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                
-                {meta.type === GoalType.QUESTOES && (
-                  <div className="flex justify-between items-center">
-                    <p className="text-sm text-gray-400">Páginas: <span className="text-white">{meta.pages}</span></p>
-                    <a href={meta.link} target="_blank" rel="noopener noreferrer" className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded text-xs font-bold transition">
-                      VER LISTA DE QUESTÕES ↗
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
+
+      {activePdfUrl && (
+        <PDFReader url={activePdfUrl} user={user} onClose={() => setActivePdfUrl(null)} />
+      )}
     </div>
   );
 };
 
-export default DailyGoals;
+export default UserDailyGoals;

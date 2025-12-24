@@ -74,6 +74,7 @@ export interface Meta {
   revisionEnabled: boolean;
   revisionIntervals?: string; // e.g. "1,7,15,30"
   repeatLastInterval?: boolean;
+  parentMetaId?: string; // Se for uma meta gerada por revisão
 }
 
 export interface Subject {
@@ -116,9 +117,12 @@ export interface StudyPlan {
 }
 
 export interface UserProgress {
+  id?: string;
   userId: string;
   planId: string;
-  completedMetaIds: string[];
-  currentGoalIndex: number; // Global index in the distribution
-  status: 'active' | 'paused';
+  metaId: string;
+  subMetaId?: string; // NOVO: ID da submeta específica (aula)
+  completedAt: string; // ISO Date
+  timeSpent: number;
+  status: 'completed' | 'skipped';
 }
