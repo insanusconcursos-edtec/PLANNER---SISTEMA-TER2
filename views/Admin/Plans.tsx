@@ -81,17 +81,17 @@ const AdminPlans: React.FC<AdminPlansProps> = ({ plans, onUpdateLogo, onPreview 
     }
   };
 
-  // FUNÇÃO REFORMULADA: Upload de PDF com Progresso e Resiliência
+  // Nova função de upload robusta
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !editingPlan) return;
     
     if (file.type !== 'application/pdf') {
-      alert("Por favor, selecione apenas arquivos no formato .PDF");
+      alert("Por favor, selecione apenas arquivos no formato PDF.");
       return;
     }
 
-    if (file.size > 30 * 1024 * 1024) { // Aumentado para 30MB
+    if (file.size > 30 * 1024 * 1024) { // Limite 30MB
       alert("O arquivo é muito grande. Limite máximo: 30MB.");
       return;
     }
@@ -99,34 +99,28 @@ const AdminPlans: React.FC<AdminPlansProps> = ({ plans, onUpdateLogo, onPreview 
     setIsUploadingPDF(true);
     setUploadProgress(0);
 
-    const fileName = `${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
-    const storageRef = ref(storage, `plans/${editingPlan.id}/pdfs/${fileName}`);
+    const safeName = file.name.replace(/[^a-z0-9.]/gi, '_').toLowerCase();
+    const storagePath = `plans/${editingPlan.id}/materials/${Date.now()}_${safeName}`;
+    const storageRef = ref(storage, storagePath);
     
-    const metadata = {
-      contentType: 'application/pdf',
-    };
-
-    const uploadTask = uploadBytesResumable(storageRef, file, metadata);
+    const uploadTask = uploadBytesResumable(storageRef, file);
 
     uploadTask.on('state_changed', 
       (snapshot) => {
         const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
         setUploadProgress(Math.round(progress));
-        console.log('Upload is ' + progress + '% done');
       }, 
       (error) => {
-        console.error("Erro no upload:", error);
+        console.error("Upload Error:", error);
         setIsUploadingPDF(false);
-        setUploadProgress(0);
-        alert("Falha no envio do arquivo. Verifique se o Firebase Storage está ativo ou se há permissão de escrita.");
+        alert("Erro ao enviar arquivo. Verifique sua internet e tente novamente.");
       }, 
-      () => {
-        getDownloadURL(uploadTask.snapshot.ref).then((downloadURL) => {
-          setCurrentMeta(prev => ({ ...prev, pdfUrl: downloadURL }));
-          setIsUploadingPDF(false);
-          setUploadProgress(100);
-          alert("✓ Arquivo enviado e sincronizado com sucesso!");
-        });
+      async () => {
+        const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+        setCurrentMeta(prev => ({ ...prev, pdfUrl: downloadURL }));
+        setIsUploadingPDF(false);
+        setUploadProgress(100);
+        alert("Arquivo PDF carregado com sucesso!");
       }
     );
   };
@@ -369,28 +363,30 @@ const AdminPlans: React.FC<AdminPlansProps> = ({ plans, onUpdateLogo, onPreview 
                        {(currentMeta.type === GoalType.QUESTOES || currentMeta.type === GoalType.LEI_SECA || currentMeta.type === GoalType.MATERIAL || currentMeta.type === GoalType.RESUMO) && (
                           <div className="p-6 bg-black/40 border border-gray-800 rounded-2xl space-y-5">
                              <div className="flex items-center justify-between">
-                                <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Material Complementar PDF</label>
-                                {currentMeta.pdfUrl && <span className="text-[9px] text-green-500 font-bold uppercase tracking-widest animate-pulse font-black">✓ PDF PRONTO</span>}
+                                <label className="text-[10px] font-black text-blue-500 uppercase tracking-widest">Material PDF & Link</label>
+                                {currentMeta.pdfUrl && <span className="text-[9px] text-green-500 font-bold uppercase animate-pulse tracking-widest font-black">✓ PDF PRESENTE</span>}
                              </div>
-                             <div className="flex items-center gap-4">
-                                <button 
-                                  type="button"
-                                  disabled={isUploadingPDF}
-                                  onClick={() => fileInputRef.current?.click()} 
-                                  className="flex-1 py-3 bg-gray-900 border border-gray-800 rounded-xl text-[10px] font-black uppercase text-gray-400 hover:text-white transition disabled:opacity-50"
-                                >
-                                   {isUploadingPDF ? `ENVIANDO ${uploadProgress}%...` : currentMeta.pdfUrl ? 'SUBSTITUIR PDF' : 'CARREGAR ARQUIVO .PDF'}
-                                </button>
-                                <input ref={fileInputRef} type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
+                             
+                             <div className="space-y-4">
+                               <button 
+                                 type="button" 
+                                 disabled={isUploadingPDF}
+                                 onClick={() => fileInputRef.current?.click()} 
+                                 className="w-full py-4 bg-gray-900 border border-gray-800 rounded-xl text-[10px] font-black uppercase text-gray-400 hover:text-white transition disabled:opacity-50 flex items-center justify-center gap-3"
+                               >
+                                  {isUploadingPDF ? `ENVIANDO ${uploadProgress}%...` : currentMeta.pdfUrl ? 'SUBSTITUIR PDF' : 'CARREGAR ARQUIVO .PDF'}
+                                  {isUploadingPDF && <div className="w-4 h-4 border-2 border-red-600 border-t-transparent rounded-full animate-spin"></div>}
+                               </button>
+                               <input ref={fileInputRef} type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
                              </div>
-                             {isUploadingPDF && (
-                               <div className="w-full bg-gray-900 h-1.5 rounded-full overflow-hidden">
-                                  <div className="bg-blue-600 h-full transition-all duration-300" style={{ width: `${uploadProgress}%` }}></div>
-                               </div>
-                             )}
+
                              <div>
                                 <label className="text-[10px] font-black text-gray-600 uppercase mb-2 block">Páginas (Para cálculo de tempo)</label>
                                 <input type="number" value={currentMeta.pages} onChange={e => setCurrentMeta({...currentMeta, pages: parseInt(e.target.value)})} className="w-full bg-black border border-gray-800 p-3 rounded-xl text-white text-xs outline-none" />
+                             </div>
+                             <div>
+                                <label className="text-[10px] font-black text-gray-600 uppercase mb-2 block">Link Externo Alternativo</label>
+                                <input value={currentMeta.link} onChange={e => setCurrentMeta({...currentMeta, link: e.target.value})} className="w-full bg-black border border-gray-800 p-3 rounded-xl text-white text-xs outline-none focus:border-red-600" placeholder="https://..." />
                              </div>
                           </div>
                        )}
